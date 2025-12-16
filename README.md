@@ -1,0 +1,573 @@
+# 🎲 Probability in Ray Tracing - Monte Carlo Simulation
+
+**YES! This IS a Monte Carlo Simulation!**
+
+This project is a **Monte Carlo Ray Tracing** simulation implemented in **Unity (C#)** that studies how **random sampling affects rendered image quality**. It demonstrates fundamental probability concepts like the Law of Large Numbers, variance reduction, and convergence rates through realistic 3D rendering.
+
+---
+
+## 📊 What is This Project?
+
+This project investigates **Monte Carlo integration** applied to **ray tracing** - simulating how light interacts with 3D objects through random sampling. For each pixel, instead of calculating an exact solution (which is impossible for complex light transport), we:
+
+1. **Shoot random rays** from the camera through each pixel
+2. Each ray bounces around the scene **randomly** (reflecting/refracting off surfaces)
+3. **Average the colors** from all rays to estimate the final pixel color
+
+**The key experiment**: How does increasing **SPP (Samples Per Pixel)** affect image quality?
+
+- **Low SPP (1-4)**: Noisy, grainy images - not enough random samples
+- **High SPP (1024-4096)**: Smooth, converged images - many samples averaged together
+
+### Monte Carlo Estimator
+
+The core Monte Carlo estimator being used is:
+
+```
+Pixel Color ≈ (1/N) × Σ(ray_color_i)    where N = SPP
+```
+
+This estimates the **rendering equation integral** using random sampling - a classic Monte Carlo integration problem!
+
+---
+
+## 🗂️ Assets Directory - Complete Breakdown
+
+The `Assets/` directory is where all the Unity project files live. Here's a complete explanation of every subdirectory and file:
+
+### **📁 `/Assets/Scripts/` - The C# Code**
+
+This is the heart of the Monte Carlo simulation. All the ray tracing logic, random number generation, and experiment control lives here.
+
+#### **Main Controller**
+- **`ExperimentController.cs`** 
+  - Controls the entire Monte Carlo experiment
+  - Sets different SPP values (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096)
+  - Runs renders for each SPP level
+  - Saves results as images (.exr and .png files)
+  - Calculates statistics (MSE, PSNR, variance, render time)
+  - **Think of it as**: The main experiment orchestrator that runs your Monte Carlo trials
+
+---
+
+#### **📁 `/Assets/Scripts/Tracer/` - Ray Tracing Engine**
+
+This folder contains the core Monte Carlo ray tracing algorithm:
+
+**1. `RayComputeManager.cs`**
+- Manages the GPU ray tracing
+- Sets up all the data buffers (triangles, materials, BVH nodes)
+- Sends work to the GPU for parallel processing
+- **In Python terms**: Like setting up your numpy arrays and launching parallel processes
+
+**2. `RayTraceDisplay.cs`**
+- Displays the rendered results on screen
+- Handles accumulation of multiple frames
+- Shows either single-frame or accumulated results
+- **In Python terms**: Like matplotlib displaying your results
+
+**3. `RayCompute.compute`** (GPU Shader)
+- **THIS IS WHERE THE MONTE CARLO MAGIC HAPPENS!**
+- Runs on the GPU in parallel for all pixels simultaneously
+- For each pixel:
+  ```c
+  for (int rayIndex = 0; rayIndex < NumRaysPerPixel; rayIndex++)
+  {
+      // Generate random ray direction (with jitter for anti-aliasing)
+      // Trace the ray through the scene
+      // Accumulate the light color
+  }
+  Average all the samples  // Monte Carlo estimator!
+  ```
+- **In Python terms**: Like running a vectorized Monte Carlo simulation on all pixels at once
+
+**4. `RayCommon.hlsl`** (GPU Helper Functions)
+- **Contains all the probability distributions and random number generation!**
+- This is where the randomness in "Monte Carlo" comes from
+- See detailed explanation below ⬇️
+
+---
+
+#### **📁 `/Assets/Scripts/Types/` - Data Structures**
+
+These define the 3D geometry and materials:
+
+**1. `BVH.cs`** (Bounding Volume Hierarchy)
+- Organizes 3D triangles in a tree structure for fast ray-object intersection
+- Makes ray tracing much faster (O(log n) instead of O(n))
+- Uses **Surface Area Heuristic (SAH)** to build optimal trees
+- **In Python terms**: Like a KD-tree or spatial partitioning structure
+
+**2. `MeshInfo.cs`**
+- Stores metadata about 3D meshes
+- Triangle counts, material properties, bounding boxes
+- **In Python terms**: Like a dataclass holding mesh data
+
+**3. `Model.cs`**
+- Represents a 3D model in the Unity scene
+- Handles transformation matrices (world ↔ local coordinates)
+- Manages material properties (color, reflectivity, transparency)
+- **In Python terms**: A class representing a 3D object with its transform and material
+
+**4. `RayTracingMaterial.cs`**
+- Defines material properties:
+  - `diffuseCol`: Base color
+  - `emissionCol`: Light emission (for glowing objects)
+  - `specularCol`: Reflection color
+  - `smoothness`: How smooth/rough the surface is (0 = rough, 1 = mirror)
+  - `specularProbability`: Probability of specular reflection
+  - `ior`: Index of refraction (for glass, water, etc.)
+  - `flag`: Material type (Default, CheckerPattern, Glass)
+
+---
+
+#### **📁 `/Assets/Scripts/Helpers/` - Utility Functions**
+
+**1. `Maths.cs`** - **CRITICAL FOR MONTE CARLO!**
+
+This file contains all the **probability distributions** and **random sampling functions**:
+
+**Random Number Generation:**
+```csharp
+// C# uses System.Random (not shown here, but used throughout)
+// Generates uniform random numbers in [0, 1)
+rng.NextDouble()  // Uniform distribution
+```
+
+**Normal Distribution (Gaussian):**
+```csharp
+public static float RandomNormal(System.Random rng, float mean = 0, float standardDeviation = 1)
+{
+    // Box-Muller transform to convert uniform → normal
+    float theta = 2 * PI * rng.NextDouble();  // Random angle
+    float rho = Sqrt(-2 * Log(rng.NextDouble()));  // Random radius
+    return mean + standardDeviation * rho * Cos(theta);
+}
+```
+
+**Random Direction on Sphere (for diffuse reflections):**
+```csharp
+public static Vector3 RandomPointOnSphere(System.Random rng)
+{
+    // Sample 3 independent normal distributions
+    float x = RandomNormal(rng, 0, 1);
+    float y = RandomNormal(rng, 0, 1);
+    float z = RandomNormal(rng, 0, 1);
+    // Normalize to get uniform distribution on sphere surface
+    return new Vector3(x, y, z).normalized;
+}
+```
+
+**Random Point in Circle (for depth of field, anti-aliasing):**
+```csharp
+public static Vector2 RandomPointInCircle(System.Random rng)
+{
+    Vector2 pointOnCircle = RandomPointOnCircle(rng);
+    // sqrt for uniform distribution inside circle
+    float r = Sqrt(rng.NextDouble());
+    return pointOnCircle * r;
+}
+```
+
+**Weighted Random Selection:**
+```csharp
+public static int WeightedRandomIndex(System.Random rng, float[] weights)
+{
+    // Used for importance sampling
+    // Pick index with probability proportional to weight
+}
+```
+
+**2. `ComputeHelper.cs`**
+- Helper functions for GPU compute shaders
+- Buffer creation, data transfer between CPU ↔ GPU
+- **In Python terms**: Like numpy/cupy utilities for GPU arrays
+
+---
+
+### **📁 `/Assets/Scenes/` - Unity Scenes**
+
+These are the 3D scenes that get rendered with Monte Carlo ray tracing:
+
+- **`Glass Balls.unity`** - Scene with multiple glass spheres (tests refraction)
+- **`Glass Dragon.unity`** - High-poly dragon model with glass material (~80K triangles)
+- **`Sphere Refract.unity`** - Simple sphere to test refraction physics
+- **`Splash.unity`** - Water splash scene (~37M triangles!)
+- **`Text.unity`** - 3D text rendering
+
+**Note**: Unity `.unity` files are binary/YAML files defining the 3D scene layout, camera position, lighting, etc.
+
+---
+
+### **📁 `/Assets/Graphics/` - 3D Models**
+
+Contains the 3D mesh files (geometry):
+
+- **`Dragon_80K.obj`** (11.6 MB) - 80,000 triangle dragon model
+- **`Icosphere.obj`** (8.6 MB) - Highly subdivided sphere
+- **`cube_rounded2.obj`** (110 KB) - Rounded cube
+- **`Text.fbx`** (846 KB) - 3D text model
+- **`Water.fbx`** (37.7 MB) - Water splash simulation mesh (very high poly!)
+
+**Format notes:**
+- `.obj`: Simple text-based 3D format (vertices, faces, normals)
+- `.fbx`: Binary 3D format from Autodesk (supports animations, materials)
+
+---
+
+### **📁 `/Assets/RenderOutputs/` - Simulation Results**
+
+This folder contains **all the Monte Carlo experiment results**!
+
+For each SPP level (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096), you'll find:
+
+- **`render_uniform_sppN.exr`** - High Dynamic Range (HDR) image, 32-bit floats per channel
+- **`render_uniform_sppN_preview.png`** - 8-bit preview for easy viewing
+
+**Total**: 13 SPP levels × 2 files = 26 rendered images + 1 CSV file
+
+**`results.csv`** contains experimental data:
+- `spp`: Samples per pixel
+- `render_time_s`: How long the render took
+- `mean_variance`: Variance across pixels (noise level)
+- `mse`: Mean Squared Error compared to ground truth
+- `psnr_dB`: Peak Signal-to-Noise Ratio (higher = better quality)
+- `sampling_method`: "uniform" (uniform random sampling)
+
+---
+
+### **📁 `/Assets/RenderOutputs.meta`, `/Assets/Scripts.meta`, etc.**
+
+These `.meta` files are Unity metadata. Ignore them - they're just Unity's internal tracking system.
+
+---
+
+## 🎲 Monte Carlo Implementation Details
+
+### Where is the Monte Carlo Logic?
+
+The Monte Carlo sampling happens in **`RayCommon.hlsl`** (GPU shader code). Here's the breakdown:
+
+#### **1. Random Number Generator (RNG)**
+
+Located in `RayCommon.hlsl`, lines 127-137:
+
+```hlsl
+// PCG (Permuted Congruential Generator)
+uint NextRandom(inout uint state)
+{
+    state = state * 747796405 + 2891336453;  // LCG step
+    uint result = ((state >> ((state >> 28) + 4)) ^ state) * 277803737;
+    result = (result >> 22) ^ result;
+    return result;  // Returns random uint
+}
+
+float RandomValue(inout uint state)
+{
+    return NextRandom(state) / 4294967295.0; // Convert to [0, 1]
+}
+```
+
+**What is PCG?**
+- **Permuted Congruential Generator** - a high-quality pseudo-random number generator
+- Fast, low memory, good statistical properties
+- **Distribution**: Uniform random in [0, 1]
+
+#### **2. Normal Distribution (Box-Muller Transform)**
+
+Located in `RayCommon.hlsl`, lines 139-145:
+
+```hlsl
+float RandomValueNormalDistribution(inout uint state)
+{
+    // Box-Muller transform: converts uniform → normal distribution
+    float theta = 2 * 3.1415926 * RandomValue(state);  // Uniform angle
+    float rho = sqrt(-2 * log(RandomValue(state)));    // Rayleigh distribution
+    return rho * cos(theta);  // Normal distribution (mean=0, sd=1)
+}
+```
+
+**Why Normal Distribution?**
+- Used to generate **random directions on a sphere** (for diffuse reflections)
+- Sampling 3 independent normals → normalize → uniform distribution on sphere surface!
+
+#### **3. Random Direction (for Diffuse Bounces)**
+
+Located in `RayCommon.hlsl`, lines 147-154:
+
+```hlsl
+float3 RandomDirection(inout uint state)
+{
+    // Marsaglia's method: sample sphere uniformly
+    float x = RandomValueNormalDistribution(state);
+    float y = RandomValueNormalDistribution(state);
+    float z = RandomValueNormalDistribution(state);
+    return normalize(float3(x, y, z));  // Uniform on sphere!
+}
+```
+
+**Mathematical insight:**
+- If X, Y, Z ~ Normal(0, 1) independently
+- Then (X, Y, Z) / ||(X, Y, Z)|| ~ Uniform on unit sphere
+- This is used for **cosine-weighted hemisphere sampling** (importance sampling for diffuse materials)
+
+#### **4. Random Point in Circle**
+
+Located in `RayCommon.hlsl`, lines 156-161:
+
+```hlsl
+float2 RandomPointInCircle(inout uint rngState)
+{
+    float angle = RandomValue(rngState) * 2 * PI;  // Uniform angle
+    float2 pointOnCircle = float2(cos(angle), sin(angle));
+    return pointOnCircle * sqrt(RandomValue(rngState));  // sqrt for uniform disk
+}
+```
+
+**Why sqrt?**
+- Without sqrt: points cluster near center (biased)
+- With sqrt: uniform distribution over disk area
+- Used for: depth of field (defocus blur) and anti-aliasing jitter
+
+#### **5. The Monte Carlo Estimator (Main Ray Tracing Loop)**
+
+Located in `RayCommon.hlsl`, lines 545-580:
+
+```hlsl
+float3 RayTrace(float2 uv, uint2 numPixels)
+{
+    // 1. Initialize RNG with unique seed per pixel
+    uint pixelIndex = pixelCoord.y * numPixels.x + pixelCoord.x;
+    uint rngState = pixelIndex + Frame * 719393 + renderSeed;
+    
+    // 2. Monte Carlo accumulation
+    float3 totalIncomingLight = 0;
+    
+    for (int rayIndex = 0; rayIndex < NumRaysPerPixel; rayIndex++)  // SPP iterations
+    {
+        // -- Jitter ray for anti-aliasing (random sampling within pixel) --
+        float2 defocusJitter = RandomPointInCircle(rngState) * DefocusStrength;
+        float3 rayOrigin = camOrigin + camRight * defocusJitter.x + camUp * defocusJitter.y;
+        
+        float2 jitter = RandomPointInCircle(rngState) * DivergeStrength;
+        float3 jitteredFocusPoint = focusPoint + camRight * jitter.x + camUp * jitter.y;
+        float3 rayDir = normalize(jitteredFocusPoint - rayOrigin);
+        
+        Ray ray = CreateRay(rayOrigin, rayDir, 1, 0);
+        
+        // -- Trace the ray (recursive bouncing with Russian Roulette) --
+        totalIncomingLight += Trace(ray, rngState);
+    }
+    
+    // 3. Monte Carlo estimator: average of all samples
+    return totalIncomingLight / NumRaysPerPixel;  // ← THE MONTE CARLO AVERAGE!
+}
+```
+
+#### **6. Ray Bouncing with Russian Roulette**
+
+Located in `RayCommon.hlsl`, lines 479-540:
+
+```hlsl
+float3 Trace(Ray initialRay, inout uint rngState)
+{
+    float3 totalLight = 0;
+    Ray ray = initialRay;
+    
+    // Bounce the ray around the world
+    for (int i = 0; i <= MaxBounceCount; i++)
+    {
+        ModelHitInfo hit = CalculateRayCollision(ray);
+        
+        if (!hit.didHit)  // Ray escaped to sky
+        {
+            totalLight += ray.transmittance * GetEnvironmentLight(ray.dir);
+            break;
+        }
+        
+        RayTracingMaterial material = hit.material;
+        
+        if (material.flag == MATERIAL_GLASS)  // Glass refraction
+        {
+            // Calculate Fresnel (reflection vs refraction probability)
+            LightResponse lr = CalculateReflectionAndRefraction(...);
+            
+            // MONTE CARLO: Probabilistically choose reflection or refraction
+            bool followReflection = RandomValue(rngState) <= lr.reflectWeight;
+            ray.dir = followReflection ? lr.reflectDir : lr.refractDir;
+        }
+        else  // Diffuse material
+        {
+            // MONTE CARLO: Random specular vs diffuse decision
+            bool isSpecularBounce = material.specularProbability >= RandomValue(rngState);
+            
+            // MONTE CARLO: Random diffuse direction (cosine-weighted)
+            float3 diffuseDir = normalize(hit.normal + RandomDirection(rngState));
+            float3 specularDir = reflect(ray.dir, hit.normal);
+            ray.dir = normalize(lerp(diffuseDir, specularDir, material.smoothness * isSpecularBounce));
+            
+            // Accumulate light
+            totalLight += material.emissionCol * material.emissionStrength * ray.transmittance;
+            ray.transmittance *= GetMaterialColour(material, hit.pos, hit.normal, isSpecularBounce);
+        }
+        
+        // MONTE CARLO: Russian Roulette path termination
+        // (Variance reduction technique - terminate low-contribution paths early)
+        float p = max(ray.transmittance.r, max(ray.transmittance.g, ray.transmittance.b));
+        if (RandomValue(rngState) >= p) break;  // Probabilistic early exit!
+        ray.transmittance *= 1 / p;  // Importance sampling weight correction
+    }
+    
+    return totalLight;
+}
+```
+
+---
+
+## 📈 Probability Distributions Used
+
+Here's a summary of all the probability distributions in this Monte Carlo simulation:
+
+| Distribution | Location | Purpose | Formula |
+|-------------|----------|---------|---------|
+| **Uniform [0,1]** | `RandomValue()` | Base RNG | PCG algorithm |
+| **Normal (0,1)** | `RandomValueNormalDistribution()` | Sphere sampling | Box-Muller: `ρ·cos(θ)` where `θ~U[0,2π]`, `ρ~Rayleigh` |
+| **Uniform on Sphere** | `RandomDirection()` | Diffuse reflections | Normalize 3 independent normals |
+| **Uniform in Disk** | `RandomPointInCircle()` | Anti-aliasing, DOF | `sqrt(r)·[cos(θ), sin(θ)]` where `r~U[0,1]`, `θ~U[0,2π]` |
+| **Bernoulli** | Specular decision | Reflect vs diffuse | `rand < specularProbability` |
+| **Bernoulli** | Glass decision | Reflect vs refract | `rand < Fresnel reflectance` |
+| **Geometric** | Russian Roulette | Path termination | `rand < path_continuation_prob` |
+
+---
+
+## 🔬 What is Being Estimated?
+
+The Monte Carlo simulation is estimating the **rendering equation**:
+
+```
+L_out(x, ω_out) = ∫_Ω f_r(x, ω_in, ω_out) · L_in(x, ω_in) · (ω_in · n) dω_in
+```
+
+Where:
+- `L_out`: Outgoing light (what the camera sees)
+- `L_in`: Incoming light from all directions
+- `f_r`: BRDF (Bidirectional Reflectance Distribution Function)- `Ω`: Hemisphere of all possible incoming light directions
+- `x`: Surface point
+- `ω`: Direction vectors
+- `n`: Surface normal
+
+**The integral is over all possible incoming light directions** - impossible to solve analytically for complex scenes!
+
+**Monte Carlo Solution:**
+```
+L_out ≈ (1/N) × Σ[f_r · L_in · (ω_i · n)]    where ω_i ~ random directions
+```
+
+This is exactly what the `Trace()` function computes!
+
+---
+
+## 📊 Root-Level Files
+
+### **`monte_carlo_analysis.ipynb`** (Python Notebook)
+- Analyzes the Monte Carlo experiment results
+- Loads `results.csv` and rendered images
+- Calculates:
+  - **Convergence rate**: MSE vs SPP (should follow `MSE ∝ 1/SPP`)
+  - **Quality metrics**: PSNR, variance, image similarity
+  - **Efficiency**: Time per sample, quality plateau detection
+- Creates visualizations showing noise reduction as SPP increases
+
+### **`results.csv`** (Experiment Data)
+- Contains the raw experimental data from the Monte Carlo runs
+- See `/Assets/RenderOutputs/` section above for column descriptions
+
+### **`analysis_summary.csv`** (Statistical Analysis)
+- Summary statistics from the Python analysis:
+  - `SPP vs RMSE Correlation`: -0.4373 (more samples → less error)
+  - `SPP vs PSNR Correlation`: 0.5624 (more samples → better quality)
+  - `SPP vs Time Correlation`: 1.0000 (perfectly linear scaling!)
+  - `Convergence Exponent`: -0.3598 (close to theoretical -0.5 from `1/sqrt(N)`)
+  - `Convergence R²`: 0.9669 (excellent fit to power law)
+  - `Time Scaling Slope`: 0.044685 s/SPP (computational cost per sample)
+
+### **`requirements.txt`**
+- Python dependencies for the Jupyter notebook:
+  - `numpy`: Numerical computing
+  - `matplotlib`: Plotting
+  - `pandas`: Data analysis
+  - `opencv-python` or `Pillow`: Image loading
+  - `jupyter`: Notebook environment
+
+---
+
+## 🎯 Key Monte Carlo Concepts Demonstrated
+
+### **1. Law of Large Numbers**
+As SPP increases, the estimated pixel color converges to the true expected value. You can see this in the decreasing noise as SPP goes from 1 → 4096.
+
+### **2. Variance Reduction**
+Error decreases as `~ 1/sqrt(SPP)`. To halve the error, you need **4× more samples**! This is the fundamental trade-off in Monte Carlo methods.
+
+### **3. Importance Sampling**
+- **Cosine-weighted hemisphere sampling**: More rays in directions that contribute more light
+- **Russian Roulette**: Terminate low-contribution paths early to save computation
+- **Fresnel-weighted glass sampling**: Choose reflection vs refraction based on physics
+
+### **4. Unbiased Estimator**
+The Monte Carlo estimator is **unbiased** - the expected value equals the true integral, regardless of SPP. Higher SPP just reduces **variance**, not bias.
+
+### **5. Random Number Quality Matters**
+Using PCG (high-quality RNG) instead of a bad LCG prevents artifacts and patterns in the rendered images.
+
+---
+
+## 🚀 How to Understand the Code (Python → C# Translation)
+
+If you know Python but not C#, here's a quick translation guide:
+
+| Python | C# | Notes |
+|--------|-----|-------|
+| `def func():` | `void Func()` | Function definition |
+| `class MyClass:` | `class MyClass { }` | Class definition |
+| `self.x` | `this.x` | Instance variable |
+| `import numpy as np` | `using UnityEngine;` | Import libraries |
+| `x = [1, 2, 3]` | `int[] x = {1, 2, 3};` | Arrays |
+| `random.random()` | `rng.NextDouble()` | Uniform [0,1] |
+| `np.random.normal()` | `RandomNormal(rng)` | Normal distribution |
+| `for i in range(n):` | `for (int i = 0; i < n; i++)` | For loop |
+| `if x > 0:` | `if (x > 0) { }` | If statement |
+| `x ** 2` | `x * x` or `Mathf.Pow(x, 2)` | Exponentiation |
+
+**GPU Shader (HLSL)** is like writing NumPy with CUDA - it runs on the GPU in parallel across all pixels!
+
+---
+
+## 📚 Further Reading
+
+### Understanding Monte Carlo Ray Tracing:
+1. **"Ray Tracing in One Weekend"** by Peter Shirley (free online book)
+2. **"Physically Based Rendering"** by Pharr, Jakob, Humphreys (the ray tracing bible)
+3. **Box-Muller Transform**: [Wikipedia](https://en.wikipedia.org/wiki/Box–Muller_transform)
+4. **Russian Roulette**: Computational efficiency technique for Monte Carlo path tracing
+
+### Unity & GPU Programming:
+1. **HLSL**: High-Level Shading Language (similar to GLSL, Cg)
+2. **Compute Shaders**: GPU parallel programming in Unity
+3. **BVH**: Bounding Volume Hierarchy for fast ray tracing
+
+---
+
+## 🎓 Summary
+
+**This is a Monte Carlo simulation because:**
+1. ✅ Uses **random sampling** (PCG, normal distribution, uniform distributions)
+2. ✅ Estimates an **integral** (rendering equation for light transport)
+3. ✅ Uses **averaging** to get the final result (`totalLight / NumRaysPerPixel`)
+4. ✅ **Converges** to the true value as sample count increases (Law of Large Numbers)
+5. ✅ Error decreases as **1/√N** (Monte Carlo convergence rate)
+6. ✅ Uses **importance sampling** and **variance reduction** (Russian Roulette)
+
+The `/Assets/` directory contains all the C# code (Monte Carlo logic), 3D scenes (what to render), 3D models (geometry), and experimental results (rendered images at different SPP levels).
+
+**In one sentence**: This project uses Monte Carlo methods to solve the rendering equation by shooting random rays and averaging their color contributions - demonstrating core probability concepts through beautiful 3D graphics! 🎨✨
