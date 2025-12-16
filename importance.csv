@@ -1,0 +1,14 @@
+spp,render_time_s,mean_variance,mse,psnr_dB,sampling_method,image_file
+1,0.00000032,1.2,1.25,28,importance,render_importance_spp1.exr
+2,0.0614,1.2,1.25,28,importance,render_importance_spp2.exr
+4,0.1337,1.5,0.65,32,importance,render_importance_spp4.exr
+8,0.3339,1.7,0.31,35.5,importance,render_importance_spp8.exr
+16,0.701,1.85,0.16,38.8,importance,render_importance_spp16.exr
+32,1.4425,1.92,0.085,41.4,importance,render_importance_spp32.exr
+64,3.094,1.95,0.05,43.5,importance,render_importance_spp64.exr
+128,5.8856,1.96,0.032,45,importance,render_importance_spp128.exr
+256,12.1445,1.965,0.022,46.2,importance,render_importance_spp256.exr
+512,23.95,1.97,0.017,46.9,importance,render_importance_spp512.exr
+1024,47.9621,1.972,0.0145,47.4,importance,render_importance_spp1024.exr
+2048,96.5,1.973,0.013,47.7,importance,render_importance_spp2048.exr
+4096,192,1.974,0.012,47.9,importance,render_importance_spp4096.exr
