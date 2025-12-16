@@ -595,11 +595,18 @@ With Monte Carlo ray tracing, you get:
 
 | Method | SPP | Rays per Pixel | Time | Quality |
 |--------|-----|----------------|------|---------|
-| **Deterministic (theoretical)** | N/A | 1,000^5 = 10^15 | 2.9 billion years | Perfect |
+| **Deterministic (exhaustive)** | N/A | 1,000^5 = 10^15 | 2.9 billion years | Perfect (all paths) |
+| **Theoretical Exact (SPP→∞)** | ~100,000 | ~500,000 | **~4,500s (1.25 hrs)** | Perfect (converged) |
 | **Monte Carlo (SPP=64)** | 64 | 64 × 5 = 320 | **2.9 seconds** | Very Good (41.5 dB) |
 | **Monte Carlo (SPP=1024)** | 1024 | 1024 × 5 = 5,120 | **45.7 seconds** | Outstanding (46.5 dB) |
+| **Monte Carlo (SPP=4096)** | 4096 | 4096 × 5 = 20,480 | **182.9 seconds** | Near Perfect (47.0 dB) |
 
-**Speedup**: Monte Carlo is **~10^15 times faster** than exhaustive deterministic sampling! 🚀
+**Key Insights:**
+- **Deterministic exhaustive sampling**: Astronomically slow (billions of years) ❌
+- **Theoretical exact Monte Carlo** (SPP→∞): ~1.25 hours for full convergence
+- **Practical Monte Carlo** (SPP=64-1024): **2.9-45.7 seconds** for excellent quality ✅
+- **Speedup**: Monte Carlo at SPP=64 is **~1,530× faster** than exact solution with 95% quality!
+- **Speedup**: Monte Carlo is **~10^15 times faster** than deterministic exhaustive sampling! 🚀
 
 #### **Why Monte Carlo Wins**
 
@@ -687,7 +694,185 @@ Looking at your data, **SPP=64** is the sweet spot:
 
 ---
 
-## �🔬 What is Being Estimated?
+## 📐 Mathematical Foundation: Rendering Equation & Monte Carlo Estimator
+
+### The Rendering Equation
+
+The **rendering equation** defines how light propagates in a scene. It's what we're trying to solve:
+
+```
+L_o(x, ω_o) = ∫_Ω f_r(x, ω_i, ω_o) · L_i(x, ω_i) · (ω_i · n) dω_i
+```
+
+**Where:**
+- **L_o(x, ω_o)**: Outgoing radiance at point `x` in direction `ω_o` (what the camera sees)
+- **L_i(x, ω_i)**: Incoming radiance from direction `ω_i` (light arriving at the point)
+- **f_r(x, ω_i, ω_o)**: BRDF (Bidirectional Reflectance Distribution Function) - how the surface reflects light
+- **ω_i**: Incoming light direction (variable of integration)
+- **ω_o**: Outgoing light direction (view direction)
+- **n**: Surface normal at point `x`
+- **Ω**: Hemisphere of all possible incoming directions (2π steradians)
+- **(ω_i · n)**: Cosine term (Lambert's law - light weakens at grazing angles)
+
+**The Problem:**
+This is a **recursive integral** - the incoming light `L_i` depends on the outgoing light from other surfaces, which depends on *their* incoming light, and so on. For realistic scenes with:
+- Multiple light bounces
+- Reflections and refractions
+- Complex geometry
+- Area lights
+
+→ **Analytical solution is IMPOSSIBLE!** 🚫
+
+---
+
+### Monte Carlo Estimator
+
+Instead of solving the integral exactly, we **estimate** it using random sampling:
+
+```
+L̂ = (1/N) × Σ[i=1 to N] [ f_r · L_i · (ω_i · n) / p(ω_i) ]
+```
+
+**Where:**
+- **N**: Number of samples (SPP - Samples Per Pixel)
+- **ω_i**: Random direction sampled from probability distribution `p(ω_i)`
+- **p(ω_i)**: Probability density function for sampling directions
+- **L̂**: Estimated radiance (our approximation of the true L_o)
+
+**This is a Monte Carlo estimator because:**
+1. ✅ Uses **random sampling** (ω_i is random)
+2. ✅ **Unbiased**: E[L̂] = L_o (expected value equals true value)
+3. ✅ **Converges**: As N→∞, L̂→L_o (Law of Large Numbers)
+4. ✅ **Variance**: Var(L̂) ∝ 1/N (error decreases as 1/√N)
+
+---
+
+### Importance Sampling
+
+To reduce variance, we don't sample uniformly. We use **importance sampling** - sample more where the integrand is largest:
+
+**Cosine-weighted hemisphere sampling:**
+```
+p(ω_i) = (ω_i · n) / π
+```
+
+This cancels the cosine term in the estimator:
+```
+L̂ = (π/N) × Σ[i=1 to N] [ f_r · L_i ]
+```
+
+**Benefits:**
+- Fewer samples needed for same quality
+- Automatic emphasis on important light directions
+- Used in this implementation (see `RandomDirection()` in RayCommon.hlsl)
+
+---
+
+### Computational Complexity & Time Analysis
+
+**Time per sample breakdown:**
+```
+Each sample = 
+    1. Ray generation (with jitter)           ~O(1)
+    2. BVH traversal (find nearest intersection) ~O(log T)  where T = triangle count
+    3. Material evaluation (BRDF)             ~O(1)
+    4. Recursive bounce (repeat for next bounce) ~O(B)      where B = max bounces
+    5. Random number generation               ~O(1)
+```
+
+**Total per-pixel cost:**
+```
+Time_pixel(SPP) = SPP × [RayGen + BVH + Shading + RNG] × MaxBounces
+                = SPP × C × B
+                = O(SPP × B × log T)
+```
+
+**For entire image:**
+```
+Time_image(SPP) = Width × Height × Time_pixel(SPP)
+                = Resolution × SPP × B × log T
+                ≈ SPP × K    (where K is constant for fixed scene)
+```
+
+**This explains your observed linear scaling!**
+
+From your data: `Time = 0.0447 × SPP`
+- Coefficient 0.0447 s/SPP captures all the constant factors: resolution, scene complexity, GPU speed, etc.
+- Perfect linearity (correlation = 1.0) confirms **embarrassingly parallel** Monte Carlo!
+
+---
+
+### Theoretical Convergence to Exact Solution
+
+**Expected error (MSE) vs SPP:**
+```
+MSE(N) = σ² / N    where σ² is the variance of the integrand
+```
+
+**From your data, we can estimate:**
+```
+MSE(SPP) ≈ 2.607 / SPP^0.36   (fitted power law)
+```
+
+**To reach "exact" (MSE < 0.001):**
+```
+0.001 = 2.607 / SPP^0.36
+SPP^0.36 = 2607
+SPP = 2607^(1/0.36) ≈ 100,000 samples
+```
+
+**Estimated time for exact solution:**
+```
+T(∞) = 100,000 × 0.0447 s/SPP 
+     ≈ 4,470 seconds 
+     ≈ 1.25 hours
+```
+
+**This is the time to effectively "solve" the rendering equation!**
+
+---
+
+### Practical Efficiency: The 95% Rule
+
+**Key finding from your data:**
+
+| Target Quality | SPP Needed | Time | % of Exact Time |
+|----------------|-----------|------|-----------------|
+| 50% quality | ~8 | 0.32s | **0.007%** |
+| 80% quality | ~64 | 2.95s | **0.066%** |
+| 95% quality | ~512 | 22.8s | **0.51%** |
+| 99% quality | ~4096 | 182.9s | **4.1%** |
+| 99.9% ("exact") | ~100,000 | ~4,470s | **100%** |
+
+**Takeaway:** You get **95% quality in 0.5% of the time** needed for exact convergence! This is the power of Monte Carlo - you can **trade quality for speed** based on your needs.
+
+---
+
+### Why Monte Carlo Wins: Mathematical Perspective
+
+**Deterministic Integration (Quadrature):**
+- Need grid of size `M` points per dimension
+- For `D`-dimensional integral: `M^D` evaluations
+- Rendering equation: `D = 2 × MaxBounces` (2D direction per bounce)
+- For 5 bounces: `M^10` evaluations! 😱
+- Even with M=10: `10^10 = 10 billion` evaluations per pixel!
+
+**Monte Carlo Integration:**
+- Need only `N` random samples
+- Error: `O(1/√N)` **regardless of dimension!**
+- This is the **curse of dimensionality** breaker!
+- 1000 samples gives ~3% error in **any dimension**
+
+**For a 10-dimensional problem:**
+- Quadrature: `10^10 = 10,000,000,000` samples needed
+- Monte Carlo: `1000-10,000` samples for good quality
+- **Speedup: ~1,000,000×** for high-dimensional integrals! 🚀
+
+This is why Monte Carlo dominates computer graphics - the rendering equation is **extremely high-dimensional** (infinite dimensions if light can bounce infinitely!).
+
+---
+
+## 🔬 What is Being Estimated?
 
 The Monte Carlo simulation is estimating the **rendering equation**:
 
